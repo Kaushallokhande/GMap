@@ -1,11 +1,9 @@
 import {
   Box,
   Button,
-  ButtonGroup,
   Flex,
   HStack,
   IconButton,
-  Input,
   SkeletonText,
   Text,
 } from '@chakra-ui/react'
@@ -15,12 +13,9 @@ import {
   useJsApiLoader,
   GoogleMap,
   Marker,
-  Autocomplete,
-  DirectionsRenderer,
+  Polyline,
 } from '@react-google-maps/api'
-import { useRef, useState } from 'react'
-
-const center = { lat: 48.8584, lng: 2.2945 }
+import { useEffect, useState } from 'react'
 
 function App() {
   const { isLoaded } = useJsApiLoader({
@@ -29,42 +24,115 @@ function App() {
   })
 
   const [map, setMap] = useState(/** @type google.maps.Map */ (null))
-  const [directionsResponse, setDirectionsResponse] = useState(null)
+  const [center, setCenter] = useState({ lat: 22.681014, lng:75.879484 })
+  const [hospitals, setHospitals] = useState([])
+  const [nearestHospital, setNearestHospital] = useState(null)
+  const [routePath, setRoutePath] = useState([])
   const [distance, setDistance] = useState('')
   const [duration, setDuration] = useState('')
 
-  /** @type React.MutableRefObject<HTMLInputElement> */
-  const originRef = useRef()
-  /** @type React.MutableRefObject<HTMLInputElement> */
-  const destiantionRef = useRef()
+  useEffect(() => {
+    // Get user's current location
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setCenter({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+          })
+        },
+        () => {
+          console.error('Geolocation permission denied')
+        }
+      )
+    }
+  }, [])
+
+  useEffect(() => {
+    if (map) {
+      // Find hospitals once the map is loaded and the user's location is set
+      findHospitals()
+    }
+  }, [map, center])
 
   if (!isLoaded) {
     return <SkeletonText />
   }
 
-  async function calculateRoute() {
-    if (originRef.current.value === '' || destiantionRef.current.value === '') {
-      return
+  // Function to find nearby hospitals
+  function findHospitals() {
+    const service = new window.google.maps.places.PlacesService(map)
+    const request = {
+      location: center,
+      radius: '5000', // 5 km radius
+      type: ['hospital'], // Search for hospitals
     }
+
+    service.nearbySearch(request, (results, status) => {
+      if (status === window.google.maps.places.PlacesServiceStatus.OK) {
+        setHospitals(results)
+        findNearestHospital(results)
+      }
+    })
+  }
+
+  // Function to calculate distance between two coordinates
+  function calculateDistance(lat1, lng1, lat2, lng2) {
+    const R = 6371 // Radius of the Earth in km
+    const dLat = ((lat2 - lat1) * Math.PI) / 180
+    const dLng = ((lng2 - lng1) * Math.PI) / 180
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLng / 2) * Math.sin(dLng / 2)
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+    return R * c // Distance in km
+  }
+
+  // Function to find the nearest hospital
+  function findNearestHospital(hospitals) {
+    let nearest = null
+    let shortestDistance = Infinity
+
+    hospitals.forEach((hospital) => {
+      const distance = calculateDistance(
+        center.lat,
+        center.lng,
+        hospital.geometry.location.lat(),
+        hospital.geometry.location.lng()
+      )
+      if (distance < shortestDistance) {
+        shortestDistance = distance
+        nearest = hospital
+      }
+    })
+
+    setNearestHospital(nearest)
+    calculateRoute(nearest)
+  }
+
+  // Function to calculate route from current location to nearest hospital
+  async function calculateRoute(hospital) {
+    if (!hospital) return
+
     // eslint-disable-next-line no-undef
     const directionsService = new google.maps.DirectionsService()
     const results = await directionsService.route({
-      origin: originRef.current.value,
-      destination: destiantionRef.current.value,
+      origin: center,
+      destination: hospital.geometry.location,
       // eslint-disable-next-line no-undef
       travelMode: google.maps.TravelMode.DRIVING,
     })
-    setDirectionsResponse(results)
+
+    const route = results.routes[0].overview_path.map((point) => ({
+      lat: point.lat(),
+      lng: point.lng(),
+    }))
+
+    setRoutePath(route)
     setDistance(results.routes[0].legs[0].distance.text)
     setDuration(results.routes[0].legs[0].duration.text)
-  }
-
-  function clearRoute() {
-    setDirectionsResponse(null)
-    setDistance('')
-    setDuration('')
-    originRef.current.value = ''
-    destiantionRef.current.value = ''
   }
 
   return (
@@ -89,9 +157,31 @@ function App() {
           }}
           onLoad={map => setMap(map)}
         >
-          <Marker position={center} />
-          {directionsResponse && (
-            <DirectionsRenderer directions={directionsResponse} />
+          {/* User's current location marker */}
+          <Marker position={center} label='You' />
+
+          {/* Display markers for all nearby hospitals */}
+          {hospitals.map((hospital, index) => (
+            <Marker
+              key={index}
+              position={{
+                lat: hospital.geometry.location.lat(),
+                lng: hospital.geometry.location.lng(),
+              }}
+              label={hospital.name}
+            />
+          ))}
+
+          {/* Custom polyline for the route */}
+          {routePath.length > 0 && (
+            <Polyline
+              path={routePath}
+              options={{
+                strokeColor: '#0080ff', // Dark blue color
+                strokeOpacity: 0.8,
+                strokeWeight: 7, // Thickness
+              }}
+            />
           )}
         </GoogleMap>
       </Box>
@@ -104,36 +194,10 @@ function App() {
         minW='container.md'
         zIndex='1'
       >
-        <HStack spacing={2} justifyContent='space-between'>
-          <Box flexGrow={1}>
-            <Autocomplete>
-              <Input type='text' placeholder='Origin' ref={originRef} />
-            </Autocomplete>
-          </Box>
-          <Box flexGrow={1}>
-            <Autocomplete>
-              <Input
-                type='text'
-                placeholder='Destination'
-                ref={destiantionRef}
-              />
-            </Autocomplete>
-          </Box>
-
-          <ButtonGroup>
-            <Button colorScheme='pink' type='submit' onClick={calculateRoute}>
-              Calculate Route
-            </Button>
-            <IconButton
-              aria-label='center back'
-              icon={<FaTimes />}
-              onClick={clearRoute}
-            />
-          </ButtonGroup>
-        </HStack>
-        <HStack spacing={4} mt={4} justifyContent='space-between'>
-          <Text>Distance: {distance} </Text>
-          <Text>Duration: {duration} </Text>
+        <HStack spacing={4} justifyContent='space-between'>
+          <Text>Nearest Hospital: {nearestHospital?.name || 'Finding...'}</Text>
+          <Text>Distance: {distance}</Text>
+          <Text>Duration: {duration}</Text>
           <IconButton
             aria-label='center back'
             icon={<FaLocationArrow />}
